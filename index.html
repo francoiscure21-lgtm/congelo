@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Congélo">
+<title>Congélo</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+:root{--bg:#f4f7f8;--card:#fff;--ink:#1d2b33;--muted:#667782;--accent:#2a7f8c;--danger:#b33;--line:#dde4e8}
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,system-ui,sans-serif;background:var(--bg);color:var(--ink);padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+h1{text-align:center;margin:18px 0 6px;font-size:1.6rem}
+main{max-width:640px;margin:0 auto;padding:0 12px 40px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:14px}
+label{display:block;font-size:.85rem;color:var(--muted);margin-top:8px}
+input,select{width:100%;font-size:16px;padding:9px;border:1px solid var(--line);border-radius:8px;margin-top:3px;background:#fff;color:var(--ink)}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+button{font-size:16px;padding:10px 14px;border:0;border-radius:8px;background:var(--accent);color:#fff;cursor:pointer}
+button.sec{background:#e6eef0;color:var(--ink)}
+button.del{background:none;color:var(--danger);padding:4px 6px;font-size:14px;white-space:nowrap}
+.tools{display:flex;gap:8px;margin:10px 0}
+.tools button{flex:1}
+h2{font-size:1rem;margin:18px 4px 6px;color:var(--accent)}
+.item{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:6px;display:flex;gap:10px;align-items:flex-start}
+.item .main{flex:1;min-width:0}
+.meta{font-size:.8rem;color:var(--muted)}
+.desc{font-size:1rem;margin-top:2px;word-wrap:break-word}
+.lot{display:inline-block;background:#eef3f5;border-radius:4px;padding:0 5px;margin-right:4px;color:var(--ink)}
+.empty{color:var(--muted);font-style:italic;padding:4px 6px}
+#count{text-align:center;color:var(--muted);font-size:.9rem;margin:0 0 12px}
+#search{width:100%;font-size:16px;padding:10px;border:1px solid var(--line);border-radius:8px;background:#fff}
+</style>
+</head>
+<body>
+<main>
+<h1>Congélo</h1>
+<p id="count"></p>
+
+<section class="card">
+  <form id="form" autocomplete="off">
+    <div class="row">
+      <div><label for="lot">N° de lot</label><input id="lot" placeholder="ex. 2509 ou Léo"></div>
+      <div><label for="casier">Casier</label><select id="casier" required><option value="">—</option></select></div>
+    </div>
+    <label for="date">Date</label>
+    <input type="date" id="date" required>
+    <div class="row">
+      <div><label for="cat">Catégorie</label><input id="cat" list="cats" required></div>
+      <div><label for="sub">Sous-catégorie</label><input id="sub" list="subs"></div>
+    </div>
+    <datalist id="cats"></datalist>
+    <datalist id="subs"></datalist>
+    <label for="desc">Description</label>
+    <input id="desc" required>
+    <div style="margin-top:12px"><button type="submit" style="width:100%">Ajouter</button></div>
+  </form>
+</section>
+
+<input type="search" id="search" placeholder="Rechercher…">
+<div class="tools">
+  <button class="sec" id="btnImport" type="button">Importer Excel</button>
+  <button class="sec" id="btnSend" type="button">Envoyer par mail</button>
+</div>
+<input type="file" id="file" accept=".xlsx,.xls,.csv" hidden>
+<div id="list"></div>
+</main>
+
+<script>
+const KEY = 'congelo.v2';
+const HEAD = ['Num. Lot', 'Casier', 'Date', 'Catégorie', 'Sous-catégorie', 'Description'];
+
+let items = load();
+
+const $ = id => document.getElementById(id);
+const form = $('form'), lotEl = $('lot'), casierEl = $('casier'), dateEl = $('date'),
+      catEl = $('cat'), subEl = $('sub'), descEl = $('desc'), list = $('list'),
+      search = $('search'), file = $('file');
+
+function load() {
+  try { return JSON.parse(localStorage.getItem(KEY)) || []; } catch (e) { return []; }
+}
+function save() {
+  try { localStorage.setItem(KEY, JSON.stringify(items)); }
+  catch (e) { alert('Sauvegarde impossible sur cet appareil.'); }
+}
+function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
+function pad(n) { return String(n).padStart(2, '0'); }
+function today() {
+  const d = new Date();
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+function fmt(iso) {
+  if (!iso) return '';
+  const [y, m, d] = iso.split('-');
+  return `${d}/${m}/${y}`;
+}
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+function norm(s) {
+  return String(s ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+function parseCasier(v) {
+  const m = String(v ?? '').match(/\d+/);
+  return m ? m[0] : String(v ?? '').trim();
+}
+function parseDate(v) {
+  if (typeof v === 'number') {
+    return new Date(Math.round((v - 25569) * 86400000)).toISOString().slice(0, 10);
+  }
+  const s = String(v ?? '').trim();
+  const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (m) return `${m[3]}-${pad(m[2])}-${pad(m[1])}`;
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  return '';
+}
+function sorted() {
+  return items.slice().sort((a, b) =>
+    String(a.casier).localeCompare(String(b.casier), 'fr', { numeric: true }) ||
+    a.cat.localeCompare(b.cat, 'fr') ||
+    a.sub.localeCompare(b.sub, 'fr') ||
+    a.desc.localeCompare(b.desc, 'fr'));
+}
+
+// Initialisation du formulaire
+casierEl.insertAdjacentHTML('beforeend',
+  [1, 2, 3, 4, 5, 6, 7].map(n => `<option value="${n}">Casier ${n}</option>`).join(''));
+dateEl.value = today();
+
+form.addEventListener('submit', e => {
+  e.preventDefault();
+  items.push({
+    id: uid(),
+    lot: lotEl.value.trim(),
+    casier: casierEl.value,
+    date: dateEl.value,
+    cat: catEl.value.trim(),
+    sub: subEl.value.trim(),
+    desc: descEl.value.trim()
+  });
+  save();
+  form.reset();
+  dateEl.value = today();
+  render();
+  lotEl.focus();
+});
+
+list.addEventListener('click', e => {
+  const id = e.target.dataset.id;
+  if (!id) return;
+  if (!confirm('Supprimer cet article ?')) return;
+  items = items.filter(it => it.id !== id);
+  save();
+  render();
+});
+
+search.addEventListener('input', render);
+
+function render() {
+  const q = search.value.trim().toLowerCase();
+  count.textContent = `${items.length} article(s) au congélateur`;
+
+  const cats = [...new Set(items.map(i => i.cat).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'fr'));
+  const subs = [...new Set(items.map(i => i.sub).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'fr'));
+  $('cats').innerHTML = cats.map(v => `<option value="${esc(v)}">`).join('');
+  $('subs').innerHTML = subs.map(v => `<option value="${esc(v)}">`).join('');
+
+  const filtered = sorted().filter(it =>
+    !q || [it.lot, it.cat, it.sub, it.desc, it.casier].join(' ').toLowerCase().includes(q));
+
+  const groups = {};
+  for (const it of filtered) (groups[it.casier] ??= []).push(it);
+
+  const keys = [...new Set(['1', '2', '3', '4', '5', '6', '7', ...Object.keys(groups)])]
+    .sort((a, b) => a.localeCompare(b, 'fr', { numeric: true }));
+
+  let html = '';
+  for (const k of keys) {
+    const group = groups[k] || [];
+    if (q && !group.length) continue;
+    html += `<h2>Casier ${esc(k)} · ${group.length}</h2>`;
+    html += group.length
+      ? group.map(it => `
+          <div class="item">
+            <div class="main">
+              <div class="meta">${it.lot ? `<span class="lot">${esc(it.lot)}</span>` : ''}${fmt(it.date)} · ${esc(it.cat)}${it.sub ? ' › ' + esc(it.sub) : ''}</div>
+              <div class="desc">${esc(it.desc)}</div>
+            </div>
+            <button class="del" data-id="${it.id}" type="button">Supprimer</button>
+          </div>`).join('')
+      : '<div class="empty">Vide</div>';
+  }
+  list.innerHTML = html || '<div class="empty">Aucun article trouvé</div>';
+}
+
+// Import Excel : remplace entièrement les articles existants
+$('btnImport').addEventListener('click', () => file.click());
+file.addEventListener('change', async () => {
+  const f = file.files[0];
+  file.value = '';
+  if (!f) return;
+  try {
+    const wb = XLSX.read(await f.arrayBuffer(), { type: 'array' });
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: true, defval: '' });
+    const hi = rows.findIndex(r => r.some(c => norm(c) === 'casier'));
+    if (hi < 0) throw new Error('colonne « Casier » introuvable');
+
+    const idx = {};
+    rows[hi].forEach((c, i) => { idx[norm(c)] = i; });
+    const col = (r, names) => {
+      for (const n of names) if (idx[n] !== undefined) return r[idx[n]];
+      return '';
+    };
+
+    const imported = [];
+    for (const r of rows.slice(hi + 1)) {
+      const desc = String(col(r, ['description'])).trim();
+      const casier = parseCasier(col(r, ['casier']));
+      if (!desc && !casier) continue;
+      imported.push({
+        id: uid(),
+        lot: String(col(r, ['numlot', 'ndelot', 'nlot', 'num', 'n'])).trim(),
+        casier,
+        date: parseDate(col(r, ['date'])),
+        cat: String(col(r, ['categorie'])).trim(),
+        sub: String(col(r, ['souscategorie'])).trim(),
+        desc
+      });
+    }
+    if (!imported.length) throw new Error('aucun article trouvé dans le fichier');
+    if (!confirm(`Remplacer les ${items.length} article(s) actuels par les ${imported.length} du fichier ?`)) return;
+
+    items = imported;
+    save();
+    render();
+    alert(`${imported.length} article(s) importé(s).`);
+  } catch (err) {
+    alert('Import impossible : ' + err.message);
+  }
+});
+
+// Envoi : partage de l'Excel (iPhone) ou téléchargement (PC)
+$('btnSend').addEventListener('click', async () => {
+  if (!items.length) return alert('Rien à envoyer : le congélateur est vide.');
+  const rows = [HEAD, ...sorted().map(it => [it.lot, `Casier ${it.casier}`, fmt(it.date), it.cat, it.sub, it.desc])];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), 'Congélo');
+  const name = `congelo-${today()}.xlsx`;
+  const bytes = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+  const xlsx = new File([bytes], name, { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+
+  if (navigator.canShare && navigator.canShare({ files: [xlsx] })) {
+    try {
+      await navigator.share({ files: [xlsx], title: 'Inventaire congélo' });
+      return;
+    } catch (e) {
+      if (e.name === 'AbortError') return;
+    }
+  }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(xlsx);
+  a.download = name;
+  a.click();
+});
+
+render();
+</script>
+</body>
+</html>
